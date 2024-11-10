@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO SmsHandleSubscriptions (phone_number, handle, did) VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "37f8afd5adac7a2841feac3c0ff4b9e681f097fbeb3f249391c2439f396ff30f"
+}

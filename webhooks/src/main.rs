@@ -1,12 +1,30 @@
-use axum::{extract::State, routing::get};
+use std::sync::Arc;
+
+use atrium_api::{
+    agent::{store::MemorySessionStore, AtpAgent},
+    types::string::Did,
+};
+use atrium_xrpc_client::reqwest::ReqwestClient;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse as _, Response},
+    routing::{get, post},
+    Form,
+};
 use cja::{
     app_state::AppState as AS,
     color_eyre,
     server::run_server,
     setup::{setup_sentry, setup_tracing},
 };
+use maud::html;
+use serde::Deserialize;
+use sms::TwilioConfig;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tracing::info;
+
+mod sms;
 
 fn main() -> color_eyre::Result<()> {
     let _sentry_guard = setup_sentry();
@@ -45,6 +63,8 @@ async fn _main() -> cja::Result<()> {
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub cookie_key: cja::server::cookies::CookieKey,
+    pub atproto_agent: Arc<AtpAgent<MemorySessionStore, ReqwestClient>>,
+    pub twilio_config: TwilioConfig,
 }
 
 impl AppState {
@@ -53,9 +73,14 @@ impl AppState {
 
         let cookie_key = cja::server::cookies::CookieKey::from_env_or_generate()?;
 
+        let client = ReqwestClient::new("https://bsky.social");
+        let agent = AtpAgent::new(client, MemorySessionStore::default());
+
         Ok(Self {
             db: pool,
             cookie_key,
+            atproto_agent: Arc::new(agent),
+            twilio_config: TwilioConfig::from_env()?,
         })
     }
 }
@@ -112,9 +137,68 @@ pub async fn setup_db_pool() -> cja::Result<PgPool> {
 fn routes(app_state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/", get(handler))
+        .route("/sms_subscription", post(sms_subscription))
         .with_state(app_state)
 }
 
-async fn handler(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    "Hello, World!"
+async fn handler() -> impl axum::response::IntoResponse {
+    html! {
+        form action="/sms_subscription" method="post" {
+            input type="text" name="phone_number" placeholder="Phone Number" {}
+            input type="text" name="handle" placeholder="Handle" {}
+            input type="submit" value="Subscribe" {}
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct SmsSubscriptionForm {
+    phone_number: String,
+    handle: String,
+}
+
+async fn sms_subscription(
+    State(state): State<AppState>,
+    Form(form): Form<SmsSubscriptionForm>,
+) -> Result<Response, Response> {
+    let did = resolve_handle(&state, &form.handle)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
+
+    let verified_phone_number =
+        sms::find_verified_phone_numbers(&state.twilio_config, &form.phone_number)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
+
+    sqlx::query!(
+        "INSERT INTO SmsHandleSubscriptions (phone_number, handle, did) VALUES ($1, $2, $3)",
+        verified_phone_number.phone_number,
+        &form.handle,
+        did.as_str(),
+    )
+    .execute(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
+
+    Ok("Success".into_response())
+}
+
+async fn resolve_handle(state: &AppState, handle: &str) -> cja::Result<Did> {
+    let resp = state
+        .atproto_agent
+        .api
+        .com
+        .atproto
+        .identity
+        .resolve_handle(
+            atrium_api::com::atproto::identity::resolve_handle::ParametersData {
+                handle: handle
+                    .parse()
+                    .map_err(|_| cja::color_eyre::eyre::eyre!("Invalid handle"))?,
+            }
+            .into(),
+        )
+        .await?;
+    let did = resp.data.did;
+    Ok(did)
 }
