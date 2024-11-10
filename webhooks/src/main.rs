@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use atproto::{consume_firehose, Handler};
 use atrium_api::{
     agent::{store::MemorySessionStore, AtpAgent},
     types::string::Did,
@@ -26,6 +27,8 @@ use tracing::info;
 
 mod sms;
 
+mod atproto;
+
 fn main() -> color_eyre::Result<()> {
     let _sentry_guard = setup_sentry();
 
@@ -36,6 +39,7 @@ fn main() -> color_eyre::Result<()> {
         .block_on(async { _main().await })
 }
 
+const HANDLES: &[&str] = &["coreyja.com"];
 async fn _main() -> cja::Result<()> {
     setup_tracing("bsky-webhooks")?;
 
@@ -43,15 +47,14 @@ async fn _main() -> cja::Result<()> {
 
     cja::sqlx::migrate!().run(app_state.db()).await?;
 
+    let handler = Handler::from_db(&app_state).await?;
+
     info!("Spawning Tasks");
     let mut futures = vec![
         tokio::spawn(run_server(routes(app_state.clone()))),
-        // tokio::spawn(cja::jobs::worker::job_worker(app_state.clone(), jobs::Jobs)),
+        tokio::spawn(consume_firehose(handler.clone())),
+        tokio::spawn(update_handler(handler.clone())),
     ];
-    // if std::env::var("CRON_DISABLED").unwrap_or_else(|_| "false".to_string()) != "true" {
-    //     info!("Cron Enabled");
-    //     futures.push(tokio::spawn(cron::run_cron(app_state.clone())));
-    // }
     info!("Tasks Spawned");
 
     futures::future::try_join_all(futures).await?;
@@ -201,4 +204,14 @@ async fn resolve_handle(state: &AppState, handle: &str) -> cja::Result<Did> {
         .await?;
     let did = resp.data.did;
     Ok(did)
+}
+
+pub async fn update_handler(handler: Handler) -> cja::Result<()> {
+    loop {
+        handler.update_from_db().await?;
+
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
+
+    Ok(())
 }
