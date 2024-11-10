@@ -1,0 +1,18 @@
+[package]
+name = "firehose-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+color-eyre = "0.6.3"
+atrium-api = { version = "0.24.7" }
+atrium-xrpc-client = "0.5.9"
+chrono = "0.4.34"
+futures = "0.3.30"
+ipld-core = { version = "0.4.1", default-features = false, features = ["std"] }
+rs-car = "0.4.1"
+serde_ipld_dagcbor = { version = "0.6.0", default-features = false, features = [
+  "std",
+] }
+tokio = { version = "1.36.0", features = ["full"] }
+tokio-tungstenite = { version = "0.24.0", features = ["native-tls"] }

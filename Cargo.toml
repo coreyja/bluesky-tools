@@ -1,0 +1,3 @@
+[workspace]
+members = ["firehose-cli", "webhooks"]
+resolver = "2"
